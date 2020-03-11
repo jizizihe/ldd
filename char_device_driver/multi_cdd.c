@@ -9,6 +9,8 @@
 #define MEM_SIZE 0x1000
 #define CDD_MAJOR 230
 
+#define DEVICE_NUM 10
+
 static int cdd_major = CDD_MAJOR;
 module_param(cdd_major, int, S_IRUGO);//module_param在模块加载时传递参数
 
@@ -24,8 +26,10 @@ static int cdd_open(struct inode * inode, struct file * filp)
 	/* 将文件私有数据指向cdd_dev设备结构体，
 	 * 再用read,write,ioctl,llseek来通过private_data访问设备结构体,
 	 * 通常文件open时候完成,多个设备时优势体现出来。
+	 * container_of第一个参数为结构体成员的指针,第二个参数是结构体的类型，第三参数时第一参数结构体成员的类型
 	 */
-	filp->private_data = cdd_devp;
+	struct cdd_dev *dev = container_of(inode->i_cdev, struct cdd_dev, cdev);
+	filp->private_data = dev;
 	return 0;
 }
 
@@ -154,13 +158,13 @@ static void cdd_setup_cdev(struct cdd_dev *dev, int index)
 
 static int __init cdd_init(void)//__init表示只在模块加载时执行一次
 {
-	int ret;
+	int ret, i;
 	dev_t devno = MKDEV(cdd_major, 0);//通过主次设备号生成det_t
 
 	if(cdd_major)
-		ret = register_chrdev_region(devno , 1, "cdd");//向系统申请设备号
+		ret = register_chrdev_region(devno , DEVICE_NUM, "cdd");//向系统申请设备号
 	else {
-		ret = alloc_chrdev_region(&devno, 0, 1, "cdd");//用在设备号未知，成功向系统申请设备号后，会将设备号放进devno中
+		ret = alloc_chrdev_region(&devno, 0, DEVICE_NUM, "cdd");//用在设备号未知，成功向系统申请设备号后，会将设备号放进devno中
 		cdd_major = MAJOR(devno);//获取主设备号，获取次设备号使用MINOR();
 	}
 	if(ret < 0)
@@ -169,24 +173,28 @@ static int __init cdd_init(void)//__init表示只在模块加载时执行一次
 	 * 2.GFP_KERNEL:申请内存时，若不能满足，则进程会睡眠等待页，即阻塞。因此不能在中断上下文或持有自旋锁使用。
 	 * 3.GFP_ATOMIC:分配内存的过程是一个原子过程，分配内存的过程不会被(高优先级进程或中断)打断。
 	 */
-	cdd_devp = kzalloc(sizeof(struct cdd_dev), GFP_KERNEL);
+	cdd_devp = kzalloc(sizeof(struct cdd_dev) * DEVICE_NUM, GFP_KERNEL);
 	if(!cdd_devp) {
 		ret = -ENOMEM; //ENOMEM表示:内存溢出,在uapi/asm-generic/errno-base.h可以查询
 		goto fail_malloc;
 	}
-
-	cdd_setup_cdev(cdd_devp, 0);
+	
+	for(i = 0; i < DEVICE_NUM; i++)
+		cdd_setup_cdev(cdd_devp + i, i);
+	
 	return 0;
 
 fail_malloc:
-	unregister_chrdev_region(devno, 1);//释放设备号
+	unregister_chrdev_region(devno, DEVICE_NUM);//释放设备号
 	return ret;
 }
 
 static void __exit cdd_exit(void) {
-	cdev_del(&cdd_devp->cdev);
+	int i;
+	for(i = 0; i < DEVICE_NUM; i++)
+		cdev_del(&(cdd_devp + i)->cdev);
 	kfree(cdd_devp);
-	unregister_chrdev_region(MKDEV(cdd_major, 0), 1);
+	unregister_chrdev_region(MKDEV(cdd_major, 0), DEVICE_NUM);
 }
 
 module_init(cdd_init);
